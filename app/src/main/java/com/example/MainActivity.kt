@@ -61,6 +61,13 @@ class MainActivity : ComponentActivity() {
                                             Icon(Icons.Default.ArrowForward, contentDescription = "رجوع")
                                         }
                                     }
+                                },
+                                actions = {
+                                    if (currentScreen != AppScreen.SETTINGS) {
+                                        IconButton(onClick = { currentScreen = AppScreen.SETTINGS }) {
+                                            Icon(Icons.Default.Settings, contentDescription = "الإعدادات")
+                                        }
+                                    }
                                 }
                             )
                         },
@@ -114,16 +121,19 @@ class MainActivity : ComponentActivity() {
                                     viewModel = viewModel,
                                     onNavigateToSales = { currentScreen = AppScreen.SALES },
                                     onNavigateToPurchases = { currentScreen = AppScreen.PURCHASES },
+                                    onNavigateToVouchers = { currentScreen = AppScreen.VOUCHERS },
                                     onNavigateToCustomers = { currentScreen = AppScreen.CUSTOMERS },
+                                    onNavigateToSuppliers = { currentScreen = AppScreen.SUPPLIERS },
                                     onNavigateToItems = { currentScreen = AppScreen.ITEMS },
-                                    onNavigateToVouchers = { currentScreen = AppScreen.VOUCHERS }
+                                    onNavigateToReports = { currentScreen = AppScreen.REPORTS },
+                                    onNavigateToSettings = { currentScreen = AppScreen.SETTINGS }
                                 )
                                 AppScreen.SALES -> InvoicesScreen(
-                                    type = "SALE",
+                                    invoiceType = "SALE",
                                     viewModel = viewModel
                                 )
                                 AppScreen.PURCHASES -> InvoicesScreen(
-                                    type = "PURCHASE",
+                                    invoiceType = "PURCHASE",
                                     viewModel = viewModel
                                 )
                                 AppScreen.VOUCHERS -> VouchersScreen(

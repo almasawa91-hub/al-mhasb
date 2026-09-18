@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,9 +20,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.Supplier
+import com.example.data.local.SupplierTransaction
 import com.example.ui.AccountingViewModel
 import com.example.ui.components.EmptyStateView
-import java.util.Locale
+import java.text.SimpleDateFormat
+import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,7 +33,11 @@ fun SuppliersScreen(
     modifier: Modifier = Modifier
 ) {
     val suppliers by viewModel.suppliers.collectAsState()
+    val currencySymbol by viewModel.activeCurrencySymbol.collectAsState()
+
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingSupplier by remember { mutableStateOf<Supplier?>(null) }
+    var viewingStatementSupplier by remember { mutableStateOf<Supplier?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
     val filteredSuppliers = remember(suppliers, searchQuery) {
@@ -62,9 +69,9 @@ fun SuppliersScreen(
                 onValueChange = { searchQuery = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
                     .testTag("search_supplier_input"),
-                placeholder = { Text("بحث باسم المورد أو الشركة...") },
+                placeholder = { Text("بحث باسم المورد أو اسم الشركة...") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
@@ -74,25 +81,33 @@ fun SuppliersScreen(
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(10.dp)
             )
 
             if (filteredSuppliers.isEmpty()) {
                 EmptyStateView(
                     icon = Icons.Default.LocalShipping,
                     title = if (searchQuery.isEmpty()) "لا يوجد موردون مسجلون" else "لا توجد نتائج مطابقة",
-                    description = if (searchQuery.isEmpty()) "سجل بيانات الموردين لإدارة فواتير المشتريات ودفعات الموردين" else "تحقق من صحة نص البحث",
+                    description = if (searchQuery.isEmpty()) "سجل بيانات الموردين لإدارة فواتير المشتريات ومستحقات الدفع" else "تحقق من نص البحث",
                     actionText = if (searchQuery.isEmpty()) "إضافة مورد جديد" else null,
                     onActionClick = { showAddDialog = true }
                 )
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
+                    contentPadding = PaddingValues(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(filteredSuppliers, key = { it.id }) { supplier ->
-                        SupplierCard(supplier = supplier, onDelete = { viewModel.deleteSupplier(supplier) })
+                        val balance by viewModel.getSupplierBalanceFlow(supplier.id).collectAsState(initial = supplier.openingBalance)
+                        SupplierCard(
+                            supplier = supplier,
+                            currentBalance = balance ?: 0.0,
+                            currencySymbol = currencySymbol,
+                            onEdit = { editingSupplier = supplier },
+                            onDelete = { viewModel.deleteSupplier(supplier) },
+                            onStatementClick = { viewingStatementSupplier = supplier }
+                        )
                     }
                 }
             }
@@ -100,68 +115,146 @@ fun SuppliersScreen(
     }
 
     if (showAddDialog) {
-        AddSupplierDialog(
+        SupplierDialog(
+            title = "إضافة مورد جديد",
+            supplier = null,
             onDismiss = { showAddDialog = false },
-            onConfirm = { name, phone, email, address, company, balance ->
-                viewModel.addSupplier(name, phone, email, address, company, balance)
+            onConfirm = { name, phone, email, address, company, balance, notes ->
+                viewModel.addSupplier(name, phone, email, address, company, balance, notes)
                 showAddDialog = false
             }
+        )
+    }
+
+    editingSupplier?.let { supp ->
+        SupplierDialog(
+            title = "تعديل بيانات المورد",
+            supplier = supp,
+            onDismiss = { editingSupplier = null },
+            onConfirm = { name, phone, email, address, company, _, notes ->
+                viewModel.updateSupplier(
+                    supp.copy(
+                        name = name,
+                        phone = phone,
+                        email = email,
+                        address = address,
+                        companyName = company,
+                        notes = notes
+                    )
+                )
+                editingSupplier = null
+            }
+        )
+    }
+
+    viewingStatementSupplier?.let { supp ->
+        val transactions by viewModel.getSupplierTransactions(supp.id).collectAsState(initial = emptyList())
+        SupplierStatementDialog(
+            supplier = supp,
+            transactions = transactions,
+            currencySymbol = currencySymbol,
+            onDismiss = { viewingStatementSupplier = null }
         )
     }
 }
 
 @Composable
-fun SupplierCard(supplier: Supplier, onDelete: () -> Unit) {
+fun SupplierCard(
+    supplier: Supplier,
+    currentBalance: Double,
+    currencySymbol: String,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onStatementClick: () -> Unit
+) {
     Card(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier = Modifier.fillMaxWidth().testTag("supplier_card_${supplier.id}")
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onStatementClick() }
+            .testTag("supplier_card_${supplier.id}")
     ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.1f), RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.LocalShipping, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = supplier.name, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    if (supplier.companyName.isNotEmpty()) {
+                        Text(text = "الشركة: ${supplier.companyName}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Default.Edit, contentDescription = "تعديل", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.DeleteOutline, contentDescription = "حذف", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.LocalShipping, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = supplier.name, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                if (supplier.companyName.isNotEmpty()) {
-                    Text(text = "الشركة: ${supplier.companyName}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "كشف الحساب",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.clickable { onStatementClick() }
+                    )
                 }
-                if (supplier.phone.isNotEmpty()) {
-                    Text(text = "هاتف: ${supplier.phone}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(text = "المستحق له: ", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        text = "${String.format(Locale.US, "%,.2f", currentBalance)} $currencySymbol",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = if (currentBalance > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    )
                 }
-            }
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Default.DeleteOutline, contentDescription = "حذف", tint = MaterialTheme.colorScheme.error)
             }
         }
     }
 }
 
 @Composable
-fun AddSupplierDialog(
+fun SupplierDialog(
+    title: String,
+    supplier: Supplier?,
     onDismiss: () -> Unit,
-    onConfirm: (name: String, phone: String, email: String, address: String, company: String, balance: Double) -> Unit
+    onConfirm: (name: String, phone: String, email: String, address: String, company: String, balance: Double, notes: String) -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
-    var address by remember { mutableStateOf("") }
-    var companyName by remember { mutableStateOf("") }
-    var openingBalance by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(supplier?.name ?: "") }
+    var phone by remember { mutableStateOf(supplier?.phone ?: "") }
+    var email by remember { mutableStateOf(supplier?.email ?: "") }
+    var address by remember { mutableStateOf(supplier?.address ?: "") }
+    var companyName by remember { mutableStateOf(supplier?.companyName ?: "") }
+    var openingBalance by remember { mutableStateOf(supplier?.openingBalance?.toString() ?: "") }
+    var notes by remember { mutableStateOf(supplier?.notes ?: "") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("إضافة مورد جديد", fontWeight = FontWeight.Bold) },
+        title = { Text(title, fontWeight = FontWeight.Bold) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -172,7 +265,7 @@ fun AddSupplierDialog(
                     onValueChange = { name = it },
                     label = { Text("اسم المورد *") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("add_supplier_name_input")
+                    modifier = Modifier.fillMaxWidth().testTag("supplier_name_input")
                 )
                 OutlinedTextField(
                     value = companyName,
@@ -192,15 +285,24 @@ fun AddSupplierDialog(
                 OutlinedTextField(
                     value = address,
                     onValueChange = { address = it },
-                    label = { Text("العنوان") },
+                    label = { Text("العنوان / المدينة") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (supplier == null) {
+                    OutlinedTextField(
+                        value = openingBalance,
+                        onValueChange = { openingBalance = it },
+                        label = { Text("الرصيد الافتتاحي (مستحق له)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 OutlinedTextField(
-                    value = openingBalance,
-                    onValueChange = { openingBalance = it },
-                    label = { Text("الرصيد الافتتاحي (دائن / مدين)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    value = notes,
+                    onValueChange = { notes = it },
+                    label = { Text("ملاحظات") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -211,23 +313,91 @@ fun AddSupplierDialog(
                 onClick = {
                     if (name.isNotBlank()) {
                         onConfirm(
-                            name,
-                            phone,
-                            email,
-                            address,
-                            companyName,
-                            openingBalance.toDoubleOrNull() ?: 0.0
+                            name.trim(),
+                            phone.trim(),
+                            email.trim(),
+                            address.trim(),
+                            companyName.trim(),
+                            openingBalance.toDoubleOrNull() ?: 0.0,
+                            notes.trim()
                         )
                     }
                 },
                 enabled = name.isNotBlank(),
-                modifier = Modifier.testTag("confirm_add_supplier_button")
+                modifier = Modifier.testTag("save_supplier_button")
             ) {
                 Text("حفظ")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("إلغاء") }
+        }
+    )
+}
+
+@Composable
+fun SupplierStatementDialog(
+    supplier: Supplier,
+    transactions: List<SupplierTransaction>,
+    currencySymbol: String,
+    onDismiss: () -> Unit
+) {
+    val dateFormat = remember { SimpleDateFormat("yyyy/MM/dd", Locale.US) }
+    val totalDebit = transactions.sumOf { it.debit }
+    val totalCredit = transactions.sumOf { it.credit }
+    val netBalance = totalCredit - totalDebit
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(text = "كشف حساب المورد: ${supplier.name}", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(
+                    text = "صافي المستحق له: ${String.format(Locale.US, "%,.2f", netBalance)} $currencySymbol",
+                    fontSize = 13.sp,
+                    color = if (netBalance > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        text = {
+            if (transactions.isEmpty()) {
+                Text(text = "لا توجد أي حركات مسجلة لهذا المورد حتى الآن.", modifier = Modifier.padding(16.dp))
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(transactions) { tx ->
+                        Card(
+                            shape = RoundedCornerShape(8.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(text = dateFormat.format(Date(tx.date)), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(text = tx.referenceNumber, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Text(text = tx.description, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(text = "مدين (سددنا): ${String.format(Locale.US, "%,.2f", tx.debit)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text(text = "دائن (فاتورة): ${String.format(Locale.US, "%,.2f", tx.credit)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                                    Text(text = "الرصيد: ${String.format(Locale.US, "%,.2f", tx.balanceAfter)}", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("إغلاق") }
         }
     )
 }
